@@ -230,6 +230,7 @@ pub enum Event {
     /// pushed to, which outlives the request that delivered it.
     StateSubscribe {
         subscriber: Arc<crate::types::wire::Subscriber>,
+        options: crate::types::wire::SubscribeOptions,
     },
 
     /// A client has read or written the script state store. Answered

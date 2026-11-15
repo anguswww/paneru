@@ -199,7 +199,26 @@ changes, managed window-list changes, window title changes, and display changes.
 Paneru coalesces duplicate internal events from the same ECS tick and skips
 events whose relevant state has not changed since the last emitted event.
 Consumers should parse each line independently and then call
-`paneru query state --json` when they need a full refresh.
+`paneru query state --json` when they need a full refresh — or subscribe with
+`--state` and never query at all.
+
+### State snapshots
+
+```shell
+paneru subscribe --json --state
+```
+
+With `--state`, the stream also carries the complete state document — exactly
+what `paneru query state --json` prints — as a `snapshot` event:
+
+```json
+{"event":"snapshot","state":{"version":1,"timestamp":1777740000,"active":{...},"virtual_workspaces":[...],"displays":[...]}}
+```
+
+One snapshot is sent as soon as the subscription starts, and another after every
+batch of events that changed the document (its `timestamp` aside); it follows
+that batch's other events. A client that only renders the latest state can
+ignore every other event and keep the most recent snapshot.
 
 ### Event Types
 

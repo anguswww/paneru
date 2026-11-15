@@ -132,6 +132,10 @@ pub enum SubCmd {
     Subscribe {
         #[arg(long)]
         json: bool,
+        /// Also print the complete state document as a `snapshot` event: once
+        /// on subscribing, then after every change.
+        #[arg(long)]
+        state: bool,
     },
 
     /// Reads and writes the script state store, the same one `paneru.state`
@@ -249,7 +253,11 @@ fn main() -> Result<()> {
         SubCmd::ShowMenu => client::run(ClientCommand::Send(vec!["showmenu".to_string()]))?,
         SubCmd::SendCmd { cmd } => client::run(ClientCommand::Send(cmd))?,
         SubCmd::Query { query } => client::run(ClientCommand::Query(query.kind()))?,
-        SubCmd::Subscribe { json: _ } => client::run(ClientCommand::Subscribe)?,
+        SubCmd::Subscribe { json: _, state } => {
+            client::run(ClientCommand::Subscribe(types::wire::SubscribeOptions {
+                state,
+            }))?;
+        }
         SubCmd::State { state } => client::run(ClientCommand::ScriptState(state.request()?))?,
     }
     Ok(())

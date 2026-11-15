@@ -6,7 +6,9 @@
 //! [`Event`] for the world, and the ones that expect an answer carry a reply
 //! channel the answering system fills in.
 
-use crate::types::wire::{self, Delivery, Reply as MachReply, Request, service_name};
+use crate::types::wire::{
+    self, Delivery, Reply as MachReply, Request, SubscribeOptions, service_name,
+};
 use bevy::tasks::{IoTaskPool, TaskPool};
 use futures_lite::StreamExt;
 use std::sync::Arc;
@@ -106,21 +108,30 @@ impl CommandReader {
                 });
             }
 
-            Request::Subscribe => {
-                if let Some(subscriber) = subscriber {
-                    send(
-                        &events,
-                        Event::StateSubscribe {
-                            subscriber: Arc::new(subscriber),
-                        },
-                    );
-                } else {
-                    // No channel to push events to; the sender built the
-                    // request by hand and got it wrong.
-                    warn!("subscribe request carried no event channel");
-                }
-            }
+            Request::Subscribe => subscribe(&events, subscriber, SubscribeOptions::default()),
+            Request::SubscribeWith(options) => subscribe(&events, subscriber, options),
         }
+    }
+}
+
+/// Hands a subscriber's event channel to the world.
+fn subscribe(
+    events: &EventSender,
+    subscriber: Option<wire::Subscriber>,
+    options: SubscribeOptions,
+) {
+    if let Some(subscriber) = subscriber {
+        send(
+            events,
+            Event::StateSubscribe {
+                subscriber: Arc::new(subscriber),
+                options,
+            },
+        );
+    } else {
+        // No channel to push events to; the sender built the request by
+        // hand and got it wrong.
+        warn!("subscribe request carried no event channel");
     }
 }
 

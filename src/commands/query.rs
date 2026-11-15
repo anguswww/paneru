@@ -30,6 +30,10 @@ use crate::types::wire::{self, Response};
 struct Subscriber {
     channel: Arc<wire::Subscriber>,
     alive: Arc<AtomicBool>,
+    /// Pushes the complete state document along with the events.
+    snapshots: bool,
+    /// Whether this subscriber has had its first snapshot yet.
+    primed: bool,
 }
 
 #[derive(Default, Resource)]
@@ -44,6 +48,9 @@ struct StateBroadcastCache {
     virtual_workspaces: Option<Vec<PaneruVirtualWorkspaceState>>,
     on_screen: Option<Vec<PaneruWindowState>>,
     titles: BTreeMap<WinID, String>,
+    /// The last snapshot pushed, timestamp zeroed so an unchanged world
+    /// compares equal.
+    snapshot: Option<PaneruQueryState>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,12 +256,18 @@ fn state_subscribe_handler(
     mut subscribers: ResMut<StateSubscribers>,
 ) {
     for event in messages.read() {
-        let Event::StateSubscribe { subscriber } = event else {
+        let Event::StateSubscribe {
+            subscriber,
+            options,
+        } = event
+        else {
             continue;
         };
         subscribers.streams.push(Subscriber {
             channel: subscriber.clone(),
             alive: Arc::new(AtomicBool::new(true)),
+            snapshots: options.state,
+            primed: false,
         });
     }
 }
@@ -375,6 +388,29 @@ fn collect_state_broadcast_events_for_intent(
     outgoing
 }
 
+/// A snapshot to push this tick.
+struct SnapshotPush {
+    event: StateEvent,
+    /// The state differs from the last snapshot pushed, so every snapshot
+    /// subscriber gets it; otherwise only those yet to receive their first.
+    changed: bool,
+}
+
+fn snapshot_push(cache: &mut StateBroadcastCache, document: PaneruQueryState) -> SnapshotPush {
+    let mut key = document.clone();
+    key.timestamp = 0;
+    let changed = cache.snapshot.as_ref() != Some(&key);
+    if changed {
+        cache.snapshot = Some(key);
+    }
+    SnapshotPush {
+        event: StateEvent::Snapshot {
+            state: Box::new(document),
+        },
+        changed,
+    }
+}
+
 fn state_event_broadcast_handler(
     mut messages: MessageReader<Event>,
     mut subscribers: ResMut<StateSubscribers>,
@@ -404,11 +440,16 @@ fn state_event_broadcast_handler(
         window_focused: !focused_changes.is_empty(),
     };
     let intent = StateBroadcastIntent::from_events(events, signals);
-    if intent.is_empty() {
+    let wants_snapshots = subscribers.streams.iter().any(|stream| stream.snapshots);
+    let unprimed = subscribers
+        .streams
+        .iter()
+        .any(|stream| stream.snapshots && !stream.primed);
+    if intent.is_empty() && !unprimed {
         return;
     }
 
-    let document = if intent.requires_state() {
+    let document = if intent.requires_state() || wants_snapshots {
         match state.extract() {
             Ok(document) => Some(document),
             Err(err) => {
@@ -419,21 +460,24 @@ fn state_event_broadcast_handler(
     } else {
         None
     };
-    let outgoing = collect_state_broadcast_events_for_intent(
-        &intent,
-        document.as_ref(),
-        &mut cache,
-        |window_id| {
-            state
-                .windows()
-                .find(window_id)
-                .and_then(|(window, _)| window.title().ok())
-        },
-    );
-
-    if outgoing.is_empty() {
-        return;
-    }
+    let outgoing = if intent.is_empty() {
+        Vec::new()
+    } else {
+        collect_state_broadcast_events_for_intent(
+            &intent,
+            document.as_ref(),
+            &mut cache,
+            |window_id| {
+                state
+                    .windows()
+                    .find(window_id)
+                    .and_then(|(window, _)| window.title().ok())
+            },
+        )
+    };
+    let snapshot = document
+        .filter(|_| wants_snapshots)
+        .map(|document| snapshot_push(&mut cache, document));
 
     // Each send is non-blocking and bounded, so a stalled reader just drops the
     // event instead of blocking the main thread; an exited subscriber is
@@ -442,9 +486,12 @@ fn state_event_broadcast_handler(
         .streams
         .retain(|subscriber| subscriber.alive.load(Ordering::Relaxed));
 
-    let events = Arc::new(outgoing);
-    for subscriber in &subscribers.streams {
-        for event in events.iter() {
+    for subscriber in &mut subscribers.streams {
+        let snapshot = snapshot
+            .as_ref()
+            .filter(|snapshot| subscriber.snapshots && (snapshot.changed || !subscriber.primed))
+            .map(|snapshot| &snapshot.event);
+        for event in outgoing.iter().chain(snapshot) {
             match subscriber.channel.try_send(event) {
                 Ok(()) => {}
                 // The subscriber's process is gone; reaped on the next
@@ -458,6 +505,9 @@ fn state_event_broadcast_handler(
                 // is kept.
                 Err(err) => warn!("pushing broadcast event: {err}"),
             }
+        }
+        if subscriber.snapshots {
+            subscriber.primed = true;
         }
     }
 }
@@ -525,6 +575,30 @@ mod tests {
                 windows,
             }],
         }
+    }
+
+    #[test]
+    fn test_snapshots_are_pushed_only_when_the_state_changes() {
+        let mut cache = StateBroadcastCache::default();
+        let state = query_state_with_active_window(1, "com.example.app", "term", 1, vec![1]);
+
+        let first = snapshot_push(&mut cache, state.clone());
+        assert!(first.changed, "nothing was pushed before");
+        let StateEvent::Snapshot { state: pushed } = &first.event else {
+            panic!("expected a snapshot, got {:?}", first.event);
+        };
+        assert_eq!(**pushed, state);
+
+        let mut later = state.clone();
+        later.timestamp += 5;
+        assert!(
+            !snapshot_push(&mut cache, later).changed,
+            "only the timestamp moved"
+        );
+
+        let more_windows =
+            query_state_with_active_window(1, "com.example.app", "term", 1, vec![1, 2]);
+        assert!(snapshot_push(&mut cache, more_windows).changed);
     }
 
     #[test]

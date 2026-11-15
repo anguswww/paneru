@@ -6,7 +6,7 @@
 use crate::types::state::{StateEvent, StateQueryKind};
 use crate::types::wire::{
     self, Error as WireError, QueryPayload, Request, Response, ScriptStateRequest,
-    ScriptStateResponse, SendPort, Sender, service_name,
+    ScriptStateResponse, SendPort, Sender, SubscribeOptions, service_name,
 };
 use futures_lite::StreamExt;
 
@@ -79,16 +79,22 @@ pub async fn script_state(request: ScriptStateRequest) -> Result<String> {
 }
 
 /// Streams state events to stdout, one JSON object per line, until interrupted.
+/// With `options.state`, a `snapshot` event carrying the whole state document
+/// is printed first and after every change.
 ///
 /// # Errors
 ///
 /// If the daemon cannot be reached.
-pub async fn subscribe() -> Result<()> {
+pub async fn subscribe(options: SubscribeOptions) -> Result<()> {
     use std::io::Write;
 
-    let events = connect()?
-        .subscribe::<StateEvent>(&Request::Subscribe)
-        .await?;
+    // A plain subscription stays the request every daemon version knows.
+    let request = if options == SubscribeOptions::default() {
+        Request::Subscribe
+    } else {
+        Request::SubscribeWith(options)
+    };
+    let events = connect()?.subscribe::<StateEvent>(&request).await?;
     let mut events = std::pin::pin!(events);
 
     while let Some(delivery) = events.next().await {
@@ -134,7 +140,7 @@ pub fn run(command: ClientCommand) -> Result<()> {
                 println!("{}", script_state(request).await?);
                 Ok(())
             }
-            ClientCommand::Subscribe => subscribe().await,
+            ClientCommand::Subscribe(options) => subscribe(options).await,
         }
     })
 }
@@ -146,7 +152,7 @@ pub enum ClientCommand {
     Send(Vec<String>),
     Query(StateQueryKind),
     ScriptState(ScriptStateRequest),
-    Subscribe,
+    Subscribe(SubscribeOptions),
 }
 
 /// Renders a query answer as the JSON its kind has always produced.

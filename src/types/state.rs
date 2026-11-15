@@ -293,6 +293,10 @@ pub enum StateEvent {
     /// Display configuration changed. `display_id` is `null` for a global
     /// change Paneru cannot pin to one display.
     DisplayChanged { display_id: Option<u32> },
+    /// The complete state document, pushed only to subscribers that asked for
+    /// it: once on subscribing, then after each batch of events that changed
+    /// it.
+    Snapshot { state: Box<QueryState> },
 }
 
 impl StateEvent {
@@ -368,6 +372,26 @@ mod tests {
             event,
             "clients must decode exactly what the daemon emits"
         );
+    }
+
+    #[test]
+    fn a_snapshot_prints_the_state_document_under_state() {
+        let event = StateEvent::Snapshot {
+            state: Box::new(QueryState {
+                version: 1,
+                timestamp: 0,
+                active: ActiveState::default(),
+                virtual_workspaces: Vec::new(),
+                displays: Vec::new(),
+            }),
+        };
+        let json = event.to_json().unwrap();
+        assert_eq!(json["event"], "snapshot");
+        assert_eq!(json["state"]["version"], 1);
+        assert!(json["state"]["displays"].is_array());
+
+        let bytes = MessagePack.encode(&event).unwrap();
+        assert_eq!(MessagePack.decode::<StateEvent>(&bytes).unwrap(), event);
     }
 
     /// A daemon from before `role`/`subrole` existed omits them; a newer client

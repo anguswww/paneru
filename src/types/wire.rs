@@ -105,6 +105,19 @@ pub enum Request {
     ScriptState(ScriptStateRequest),
     /// Ask for state events to be pushed as they happen.
     Subscribe,
+    /// [`Request::Subscribe`], with options. A separate variant so a daemon
+    /// that predates the options still understands a plain subscription.
+    SubscribeWith(SubscribeOptions),
+}
+
+/// What a subscriber wants pushed besides the events themselves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscribeOptions {
+    /// Also push the complete state document: once on subscribing, and after
+    /// every batch of events that changed it. A client that only renders the
+    /// latest state then never has to query.
+    #[serde(default)]
+    pub state: bool,
 }
 
 /// What a client wants of the script-state store.
@@ -188,6 +201,7 @@ mod tests {
         round_trip(&Request::WindowSet);
         round_trip(&Request::WindowSetApply(vec![LayoutOp::Focus(7)]));
         round_trip(&Request::Subscribe);
+        round_trip(&Request::SubscribeWith(SubscribeOptions { state: true }));
         round_trip(&Request::ScriptState(ScriptStateRequest::Get {
             key: "pads.term".to_string(),
         }));
