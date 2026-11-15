@@ -275,6 +275,19 @@ paneru send-cmd window virtualmovenum 3
 paneru send-cmd window virtualsendnum 3
 ```
 
+`virtualnum` can name the display whose Space it switches, using a
+`display_id` from the state document's `displays` array:
+
+```shell
+paneru send-cmd window virtualnum 3 display 2
+```
+
+On the active display this is a plain `virtualnum 3`. On another display, Paneru
+first activates that display the way `paneru send-cmd mouse display 2` does, then
+selects the row once macOS reports the display active. If the display does not
+become active within a second (one Paneru cannot focus a window on, say), or
+another virtual workspace command arrives first, the switch is dropped.
+
 The matching config binding names are:
 
 ```toml
@@ -282,4 +295,5 @@ The matching config binding names are:
 window_virtualnum_3 = "cmd + alt - 3"
 window_virtualmovenum_3 = "cmd + alt + ctrl - 3"
 window_virtualsendnum_3 = "cmd + alt + shift - 3"
+window_virtualnum_3_display_2 = "cmd + alt + ctrl + shift - 3"
 ```

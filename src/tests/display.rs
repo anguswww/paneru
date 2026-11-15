@@ -2724,3 +2724,148 @@ fn test_vertical_focus_moves_the_pointer_to_the_nearest_display_in_that_directio
             .run(window_commands(Operation::Focus(direction)));
     }
 }
+
+/// The active strip's (space, virtual index).
+fn active_row(world: &mut World) -> (u64, u32) {
+    world
+        .query_filtered::<&LayoutStrip, With<crate::ecs::ActiveWorkspaceMarker>>()
+        .single(world)
+        .map(|strip| (strip.id(), strip.virtual_index))
+        .expect("an active strip")
+}
+
+fn two_display_harness() -> TestHarness {
+    let display_bounds = IRect::new(0, -EXT_DISPLAY_HEIGHT, EXT_DISPLAY_WIDTH, 0);
+    TestHarness::new()
+        .with_config(Config::try_from("default_workspaces = 3\n").unwrap())
+        .with_display(EXT_DISPLAY_ID, display_bounds, vec![EXT_WORKSPACE_ID])
+        .with_workspace_window(100, TEST_WORKSPACE_ID, |_| {})
+        .with_workspace_window(101, TEST_WORKSPACE_ID, |_| {})
+        .with_workspace_window(200, EXT_WORKSPACE_ID, |data| {
+            data.frame = IRect::from_corners(
+                Origin::new(0, -EXT_DISPLAY_HEIGHT),
+                Origin::new(TEST_WINDOW_WIDTH, -EXT_DISPLAY_HEIGHT + TEST_WINDOW_HEIGHT),
+            );
+        })
+}
+
+#[test]
+fn test_virtualnum_on_another_display_switches_once_it_is_active() {
+    let commands = vec![
+        Event::MenuOpened { window_id: 100 },
+        Event::Command {
+            command: Command::Window(Operation::VirtualNumberOnDisplay {
+                index: 2,
+                display_id: EXT_DISPLAY_ID,
+            }),
+        },
+        Event::Command {
+            command: Command::PrintState,
+        },
+    ];
+
+    two_display_harness()
+        .on_iteration(1, |world, state| {
+            // The display is being activated the way `mouse display` does it,
+            // but the row waits until the OS says the display is active.
+            let ext_bounds = IRect::new(0, -EXT_DISPLAY_HEIGHT, EXT_DISPLAY_WIDTH, 0);
+            assert!(
+                ext_bounds.contains(state.cursor_position()),
+                "the pointer moved to the target display"
+            );
+            assert_ne!(active_row(world), (EXT_WORKSPACE_ID, 2));
+            state.activate_display(EXT_DISPLAY_ID);
+        })
+        .on_iteration(2, |world, _state| {
+            assert_eq!(active_row(world), (EXT_WORKSPACE_ID, 2));
+        })
+        .run(commands);
+}
+
+#[test]
+fn test_virtualnum_on_the_active_display_switches_at_once() {
+    let commands = vec![
+        Event::MenuOpened { window_id: 100 },
+        Event::Command {
+            command: Command::Window(Operation::VirtualNumberOnDisplay {
+                index: 1,
+                display_id: TEST_DISPLAY_ID,
+            }),
+        },
+    ];
+
+    two_display_harness()
+        .on_iteration(1, |world, _state| {
+            assert_eq!(active_row(world), (TEST_WORKSPACE_ID, 1));
+        })
+        .run(commands);
+}
+
+#[test]
+fn test_virtualnum_on_a_display_is_superseded_by_a_later_switch() {
+    let commands = vec![
+        Event::MenuOpened { window_id: 100 },
+        Event::Command {
+            command: Command::Window(Operation::VirtualNumberOnDisplay {
+                index: 2,
+                display_id: EXT_DISPLAY_ID,
+            }),
+        },
+        Event::Command {
+            command: Command::PrintState,
+        },
+    ];
+
+    two_display_harness()
+        .on_iteration(1, |world, state| {
+            // Another switch arrives while the first still waits, then the
+            // display reports active.
+            world.write_message(Event::Command {
+                command: Command::Window(Operation::VirtualNumber(1)),
+            });
+            state.activate_display(EXT_DISPLAY_ID);
+        })
+        .on_iteration(2, |world, _state| {
+            // Focus reached the external display with the pointer, so the
+            // plain switch acted there; the waiting one must not then
+            // override it.
+            assert_eq!(
+                active_row(world),
+                (EXT_WORKSPACE_ID, 1),
+                "the later switch cancelled the one waiting for its display"
+            );
+        })
+        .run(commands);
+}
+
+#[test]
+fn test_virtualnum_on_a_display_gives_up_when_it_never_activates() {
+    let commands = vec![
+        Event::MenuOpened { window_id: 100 },
+        Event::Command {
+            command: Command::Window(Operation::VirtualNumberOnDisplay {
+                index: 2,
+                display_id: EXT_DISPLAY_ID,
+            }),
+        },
+        Event::Command {
+            command: Command::PrintState,
+        },
+        Event::Command {
+            command: Command::PrintState,
+        },
+        Event::Command {
+            command: Command::PrintState,
+        },
+    ];
+
+    two_display_harness()
+        .on_iteration(3, |_world, state| {
+            // Long past the wait: the switch was dropped.
+            state.activate_display(EXT_DISPLAY_ID);
+        })
+        .on_iteration(4, |world, _state| {
+            assert_eq!(active_row(world), (EXT_WORKSPACE_ID, 0));
+        })
+        .run(commands);
+}

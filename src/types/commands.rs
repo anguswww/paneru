@@ -274,6 +274,10 @@ pub enum Operation {
     FocusOrVirtual(Direction),
     /// Selects a virtual strip by its zero-based index for the current workspace.
     VirtualNumber(u32),
+    /// Selects a virtual strip by its zero-based index on the Space a given
+    /// display shows: the display is made active first (as `mouse display`
+    /// does), then the strip is selected there.
+    VirtualNumberOnDisplay { index: u32, display_id: u32 },
     /// Creates a new empty virtual strip after the highest existing one for
     /// the current workspace, and switches to it.
     VirtualAdd,

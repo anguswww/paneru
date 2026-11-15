@@ -128,6 +128,7 @@ impl StateBroadcastIntent {
                         Command::Window(
                             Operation::Virtual(_)
                             | Operation::VirtualNumber(_)
+                            | Operation::VirtualNumberOnDisplay { .. }
                             | Operation::VirtualAdd,
                         ),
                 } => intent.virtual_workspace_changed = true,

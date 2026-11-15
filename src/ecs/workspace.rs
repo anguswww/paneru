@@ -18,7 +18,8 @@ use tracing::{Level, debug, error, instrument, warn};
 
 use super::{ActiveDisplayMarker, SpawnWindowTrigger};
 use crate::commands::{
-    Direction, MoveFocus, Operation, filter_window_operations, get_window_in_direction,
+    Command, Direction, MouseMove, MoveFocus, Operation, filter_window_operations,
+    get_window_in_direction,
 };
 use crate::config::Config;
 use crate::ecs::focus::FocusHistory;
@@ -137,7 +138,12 @@ impl Plugin for WorkspaceEventsPlugin {
 
         app.add_systems(
             PreUpdate,
-            (switch_virtual_workspace_bind, move_virtual_workspace_bind)
+            (
+                switch_virtual_workspace_bind,
+                move_virtual_workspace_bind,
+                display_virtual_number_bind,
+                apply_pending_display_virtual,
+            )
                 .in_set(super::PreUpdateSet::Dispatch),
         );
         app.add_systems(
@@ -1263,6 +1269,100 @@ fn switch_virtual_workspace_bind(
         rows[current_index].1.virtual_index,
         rows[next_index].1.virtual_index
     );
+}
+
+/// How long a display-targeted `virtualnum` waits for its display to become
+/// active before it is dropped.
+const PENDING_DISPLAY_VIRTUAL_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// A display-targeted `virtualnum` waiting for its display to become active.
+/// Lives on an entity of its own with a [`Timeout`], so it is gone after
+/// [`PENDING_DISPLAY_VIRTUAL_TIMEOUT`] whether or not the display ever was.
+#[derive(Component, Debug)]
+struct PendingDisplayVirtual {
+    display_id: u32,
+    index: u32,
+}
+
+/// Selects a virtual workspace on a named display. On the active display that
+/// is a plain `virtualnum`; on another one, the display is activated the way
+/// `mouse display` does it and the switch waits for the OS to report it active
+/// — the strip being switched has to be the one new windows and commands
+/// land on, which only the active display's is.
+///
+/// Any later virtual-workspace command supersedes a switch still waiting.
+fn display_virtual_number_bind(
+    mut messages: MessageReader<Event>,
+    active_display: Single<&Display, With<ActiveDisplayMarker>>,
+    displays: Query<&Display>,
+    pending: Query<Entity, With<PendingDisplayVirtual>>,
+    mut commands: Commands,
+) {
+    let Some(operation) = filter_window_operations(&mut messages, |op| {
+        matches!(
+            op,
+            Operation::VirtualNumberOnDisplay { .. }
+                | Operation::Virtual(_)
+                | Operation::VirtualNumber(_)
+                | Operation::VirtualAdd
+                | Operation::FocusOrVirtual(_)
+        )
+    })
+    .last() else {
+        return;
+    };
+
+    for entity in &pending {
+        if let Ok(mut entity_commands) = commands.get_entity(entity) {
+            entity_commands.try_despawn();
+        }
+    }
+
+    let &Operation::VirtualNumberOnDisplay { index, display_id } = operation else {
+        return;
+    };
+
+    if active_display.id() == display_id {
+        commands.trigger(SendMessageTrigger(Event::Command {
+            command: Command::Window(Operation::VirtualNumber(index)),
+        }));
+        return;
+    }
+    if !displays.iter().any(|display| display.id() == display_id) {
+        warn!("virtualnum: no display with id {display_id}");
+        return;
+    }
+
+    debug!("virtualnum: activating display {display_id} for row {index}");
+    commands.trigger(SendMessageTrigger(Event::Command {
+        command: Command::Mouse(MouseMove::ToDisplay(display_id)),
+    }));
+    let timeout = Timeout::new(PENDING_DISPLAY_VIRTUAL_TIMEOUT, None, &mut commands);
+    commands.spawn((PendingDisplayVirtual { display_id, index }, timeout));
+}
+
+/// Finishes a display-targeted `virtualnum` once its display is the active
+/// one.
+fn apply_pending_display_virtual(
+    pending: Populated<(Entity, &PendingDisplayVirtual)>,
+    active_display: Single<&Display, With<ActiveDisplayMarker>>,
+    mut commands: Commands,
+) {
+    for (entity, pending) in &pending {
+        if pending.display_id != active_display.id() {
+            continue;
+        }
+        debug!(
+            "virtualnum: display {} is active, selecting row {}",
+            pending.display_id, pending.index
+        );
+        commands.trigger(SendMessageTrigger(Event::Command {
+            command: Command::Window(Operation::VirtualNumber(pending.index)),
+        }));
+        if let Ok(mut entity_commands) = commands.get_entity(entity) {
+            entity_commands.try_despawn();
+        }
+    }
 }
 
 /// Handles the keybinding to move windows between virtual workspaces.

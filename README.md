@@ -291,6 +291,7 @@ $ paneru send-cmd <command> [args...]
 | `window displaysend <id>`  | Move the window to display `<id>` but stay here  |
 | `window virtual <dir>`     | Switch to the previous/next virtual workspace     |
 | `window virtualnum <n>`    | Switch directly to numbered virtual workspace    |
+| `window virtualnum <n> display <id>` | Same, on the Space of the given display (activating it first) |
 | `window virtualmove <dir>` | Move the window to a different virtual workspace  |
 | `window virtualmovenum <n>` | Move the window to numbered virtual workspace and follow it |
 | `window virtualsend <dir>` | Send the window to a virtual workspace but stay  |

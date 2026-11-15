@@ -110,7 +110,17 @@ fn parse_operation(argv: &[&str]) -> Result<Operation> {
         // No numeric form: "focus a stack neighbor, else switch" only makes
         // sense paired with a direction.
         "virtualfocus" => Operation::FocusOrVirtual(Direction::parse(argument()?)?),
-        "virtualnum" => Operation::VirtualNumber(parse_virtual_workspace_number(argument()?)?),
+        "virtualnum" => {
+            let index = parse_virtual_workspace_number(argument()?)?;
+            match (argv.get(2).copied(), argv.get(3).copied()) {
+                (None, _) => Operation::VirtualNumber(index),
+                (Some("display"), Some(display)) => Operation::VirtualNumberOnDisplay {
+                    index,
+                    display_id: parse_display_id(display)?,
+                },
+                _ => return Err(err()),
+            }
+        }
         "virtualadd" => Operation::VirtualAdd,
         "virtualmove" => virtual_target(
             argument()?,
@@ -232,6 +242,12 @@ impl Operation {
             Operation::VirtualNumber(index) => {
                 vec!["virtualnum".to_string(), (index + 1).to_string()]
             }
+            Operation::VirtualNumberOnDisplay { index, display_id } => vec![
+                "virtualnum".to_string(),
+                (index + 1).to_string(),
+                "display".to_string(),
+                display_id.to_string(),
+            ],
             Operation::VirtualAdd => owned(&["virtualadd"]),
             Operation::VirtualMove(direction, MoveFocus::Follow) => {
                 vec!["virtualmove".to_string(), direction.token()]
@@ -292,6 +308,10 @@ mod tests {
             Operation::FocusOrVirtual(Direction::North),
             Operation::FocusOrVirtual(Direction::South),
             Operation::VirtualNumber(2),
+            Operation::VirtualNumberOnDisplay {
+                index: 2,
+                display_id: 7,
+            },
             Operation::VirtualMove(Direction::East, MoveFocus::Follow),
             Operation::VirtualMove(Direction::East, MoveFocus::Stay),
             Operation::VirtualMoveNumber(0, MoveFocus::Follow),

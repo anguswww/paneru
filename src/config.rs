@@ -2356,6 +2356,7 @@ fn test_config_parsing_absolute_virtual_workspace_bindings() {
 [bindings]
 window_virtualnum_3 = "cmd + alt - 3"
 window_virtualsendnum_3 = "cmd + alt + shift - 3"
+window_virtualnum_3_display_2 = "cmd + alt + ctrl - 3"
 "#;
     let virtual_keys = test_virtual_keymap();
     let config = Config {
@@ -2380,6 +2381,13 @@ window_virtualsendnum_3 = "cmd + alt + shift - 3"
             2,
             MoveFocus::Stay
         )))
+    ));
+    assert!(matches!(
+        config.find_keybind(keycode, Modifiers::CMD | Modifiers::ALT | Modifiers::CTRL),
+        Some(Command::Window(Operation::VirtualNumberOnDisplay {
+            index: 2,
+            display_id: 2
+        }))
     ));
 }
 
@@ -2442,6 +2450,15 @@ fn test_parse_absolute_virtual_workspace_commands() {
         parse_command(&["window", "virtualnum", "3"]).unwrap(),
         Command::Window(Operation::VirtualNumber(2))
     ));
+    assert!(matches!(
+        parse_command(&["window", "virtualnum", "3", "display", "5"]).unwrap(),
+        Command::Window(Operation::VirtualNumberOnDisplay {
+            index: 2,
+            display_id: 5
+        })
+    ));
+    assert!(parse_command(&["window", "virtualnum", "3", "display"]).is_err());
+    assert!(parse_command(&["window", "virtualnum", "3", "5"]).is_err());
     assert!(parse_command(&["workspace", "virtual", "3"]).is_err());
     assert!(matches!(
         parse_command(&["window", "virtualmove", "3"]).unwrap(),
