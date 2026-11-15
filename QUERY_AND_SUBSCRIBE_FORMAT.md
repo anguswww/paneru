@@ -71,9 +71,21 @@ Returns the complete state document.
           "role": "AXWindow",
           "subrole": "AXStandardWindow",
           "focused": true,
-          "floating": false
+          "floating": false,
+          "tab_group": null,
+          "cell": 321,
+          "cell_front": true
         }
       ]
+    }
+  ],
+  "displays": [
+    {
+      "display_id": 1,
+      "frame": { "x": 0, "y": 0, "width": 1512, "height": 982 },
+      "active": true,
+      "native_workspace_id": 4,
+      "virtual_workspace_number": 3
     }
   ]
 }
@@ -161,6 +173,15 @@ Returns only the active display, workspace, and focused-window state.
 | `floating` | boolean | Whether this window is unmanaged/floating. |
 | `column` | number or null | Zero-based column of a tiled window in its strip, left to right; `null` for floating windows. |
 | `row` | number or null | Zero-based row of a tiled window within its column, top to bottom; windows tabbed together share a row. |
+| `tab_group` | number or null | Native (OS) tab group the window belongs to, named by the smallest window id among its tabs so it does not change as tabs are switched; `null` when the window is not a native tab. |
+| `cell` | number or null | Layout cell — one frame on screen — the window occupies, named by the smallest window id in it. Native tabs share a cell, and so do all windows of a stack shown as tabs (`tabbed`). Group windows by `cell` to list each on-screen slot once. Floating windows have a cell of their own. |
+| `cell_front` | boolean | Whether this is the window its cell is showing: the front native tab, the visible tab of a tabbed stack, or the only window in the cell. |
+| `displays` | array | Every connected display, ordered left to right. |
+| `displays[].display_id` | number | CoreGraphics display id. |
+| `displays[].frame` | object | The whole display (menu bar included) in global coordinates: `x`, `y`, `width`, `height`. |
+| `displays[].active` | boolean | Whether this display has the active menu bar. |
+| `displays[].native_workspace_id` | number or null | macOS Space currently shown on this display, when known. |
+| `displays[].virtual_workspace_number` | number or null | One-based virtual workspace row shown on that Space, when Paneru manages it. |
 
 Paneru may include empty `windows` arrays for missing virtual workspace numbers
 inside a native workspace so integrations can render stable numbered slots.

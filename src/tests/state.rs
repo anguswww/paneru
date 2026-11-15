@@ -832,6 +832,150 @@ fn test_query_state_reports_a_stack_shown_as_tabs() {
 }
 
 #[test]
+fn test_query_state_reports_cells_and_native_tab_groups() {
+    use crate::tests::harness::TestHarness;
+
+    let mut harness = TestHarness::new().with_windows(4);
+    harness.app.update();
+
+    let world = harness.world();
+    let ids = |world: &mut World| {
+        let mut windows = world.query::<(Entity, &crate::manager::Window)>();
+        windows
+            .iter(world)
+            .map(|(entity, window)| (entity, window.id()))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let ids = ids(world);
+    let mut strips = world.query_filtered::<&mut LayoutStrip, With<ActiveWorkspaceMarker>>();
+    let mut strip = strips.single_mut(world).expect("active workspace");
+    let entities = strip.all_windows();
+    // Columns: [w0] [w1 + native tab w2] [w3]. The tab joins its leader's
+    // column the way a newly detected native tab does.
+    strip
+        .convert_to_tabs(entities[1], entities[2])
+        .expect("adjacent columns form a tab group");
+    let leader = ids[&entities[1]];
+    let tab = ids[&entities[2]];
+
+    let cells = |world: &mut World| {
+        let mut rows = extract_query_state(world)
+            .expect("query state extraction")
+            .virtual_workspaces[0]
+            .windows
+            .iter()
+            .map(|window| {
+                (
+                    window.window_id,
+                    window.cell,
+                    window.tab_group,
+                    window.cell_front,
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.sort_unstable();
+        rows
+    };
+
+    let group = leader.min(tab);
+    let rows = cells(world);
+    let single = |id: WinID| (id, Some(id), None, true);
+    assert!(rows.contains(&single(ids[&entities[0]])), "{rows:?}");
+    assert!(rows.contains(&single(ids[&entities[3]])), "{rows:?}");
+    // The newly joined tab is the one in front.
+    assert!(
+        rows.contains(&(tab, Some(group), Some(group), true)),
+        "the front tab: {rows:?}"
+    );
+    assert!(
+        rows.contains(&(leader, Some(group), Some(group), false)),
+        "a background tab shares the cell: {rows:?}"
+    );
+
+    // A tabbed stack is one cell, showing only its active tab.
+    let mut strip = strips.single_mut(world).expect("active workspace");
+    strip.stack(entities[3]).expect("stacks onto the tab group");
+    assert_eq!(strip.toggle_tabbed_display(entities[3]), Some(true));
+    let active = strip.active_tab(entities[3]).expect("an active tab");
+    let rows = cells(world);
+    let stack_cell = [leader, tab, ids[&entities[3]]].into_iter().min();
+    for (id, cell, _, front) in rows.iter().filter(|row| row.0 != ids[&entities[0]]) {
+        assert_eq!(*cell, stack_cell, "window {id} sits in the stack's cell");
+        let showing = if active == entities[3] {
+            *id == ids[&entities[3]]
+        } else {
+            *id == tab
+        };
+        assert_eq!(*front, showing, "window {id}: {rows:?}");
+    }
+}
+
+#[test]
+fn test_query_state_lists_each_display_and_the_row_it_shows() {
+    use crate::tests::harness::TestHarness;
+    use crate::tests::{EXT_DISPLAY_HEIGHT, EXT_DISPLAY_ID, EXT_DISPLAY_WIDTH, EXT_WORKSPACE_ID};
+
+    let mut harness = TestHarness::new()
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(0, -EXT_DISPLAY_HEIGHT, EXT_DISPLAY_WIDTH, 0),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_windows(1);
+    harness.app.update();
+    harness.app.update();
+
+    let world = harness.world();
+    let ext_display = world
+        .query::<(Entity, &Display)>()
+        .iter(world)
+        .find_map(|(entity, display)| (display.id() == EXT_DISPLAY_ID).then_some(entity))
+        .expect("external display");
+    // The external display's space has rows 1-3 with the third selected.
+    let mut existing = world.query::<(Entity, &LayoutStrip)>();
+    let previous = existing
+        .iter(world)
+        .filter_map(|(entity, strip)| (strip.id() == EXT_WORKSPACE_ID).then_some(entity))
+        .collect::<Vec<_>>();
+    for entity in previous {
+        world.entity_mut(entity).despawn();
+    }
+    for index in 0..3 {
+        let mut strip = world.spawn((
+            LayoutStrip::new(EXT_WORKSPACE_ID, index),
+            ChildOf(ext_display),
+        ));
+        if index == 2 {
+            strip.insert(SelectedVirtualMarker);
+        }
+    }
+
+    let state = extract_query_state(world).expect("query state extraction");
+    let display = |id: u32| {
+        state
+            .displays
+            .iter()
+            .find(|display| display.display_id == id)
+            .unwrap_or_else(|| panic!("display {id} missing: {:?}", state.displays))
+    };
+
+    assert_eq!(state.displays.len(), 2);
+    let main = display(TEST_DISPLAY_ID);
+    assert!(main.active);
+    assert_eq!(main.native_workspace_id, Some(TEST_WORKSPACE_ID));
+    assert_eq!(
+        main.virtual_workspace_number, state.active.virtual_workspace_number,
+        "the active display shows the active row"
+    );
+    let ext = display(EXT_DISPLAY_ID);
+    assert!(!ext.active);
+    assert_eq!(ext.native_workspace_id, Some(EXT_WORKSPACE_ID));
+    assert_eq!(ext.virtual_workspace_number, Some(3));
+    assert_eq!(ext.frame.y, -EXT_DISPLAY_HEIGHT);
+    assert_eq!(ext.frame.width, EXT_DISPLAY_WIDTH);
+}
+
+#[test]
 fn test_query_state_assigns_float_only_to_active_row() {
     use crate::commands::{Command, Operation};
     use crate::tests::harness::TestHarness;
@@ -965,6 +1109,9 @@ fn test_query_state_tolerates_workspace_query_failure() {
     window_manager
         .expect_windows_in_workspace()
         .returning(|_| Err(Error::Generic("workspace query failed".to_string())));
+    window_manager
+        .expect_active_display_space()
+        .returning(|_| Err(Error::Generic("space query failed".to_string())));
     harness
         .world()
         .insert_resource(WindowManager(Box::new(window_manager)));
@@ -972,6 +1119,10 @@ fn test_query_state_tolerates_workspace_query_failure() {
     let state =
         extract_query_state(harness.world()).expect("query state should survive workspace failure");
     assert_eq!(state.virtual_workspaces.len(), 1);
+    // A display whose Space cannot be read is still listed, just without one.
+    assert_eq!(state.displays.len(), 1);
+    assert_eq!(state.displays[0].native_workspace_id, None);
+    assert_eq!(state.displays[0].virtual_workspace_number, None);
 
     let set =
         extract_window_set(harness.world()).expect("window set should survive workspace failure");

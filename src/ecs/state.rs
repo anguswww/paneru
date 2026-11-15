@@ -127,8 +127,8 @@ pub struct SavedWindow {
 // These wire-format types live in the shared `paneru_shared_types` crate;
 // aliased here to the names the rest of the daemon already uses.
 pub use crate::types::state::{
-    ActiveState as PaneruActiveState, Frame, QueryState as PaneruQueryState, StateEvent,
-    StateQueryKind, VirtualWorkspaceState as PaneruVirtualWorkspaceState,
+    ActiveState as PaneruActiveState, DisplayState, Frame, QueryState as PaneruQueryState,
+    StateEvent, StateQueryKind, VirtualWorkspaceState as PaneruVirtualWorkspaceState,
     WindowState as PaneruWindowState,
 };
 
@@ -152,6 +152,103 @@ fn strip_positions(strip: &LayoutStrip) -> HashMap<Entity, (u32, u32)> {
         }
     }
     positions
+}
+
+/// Where a tiled window sits among the windows it shares a frame with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CellSlot {
+    /// Index into the groups [`strip_cells`] returns: the windows sharing
+    /// this window's frame.
+    cell: usize,
+    /// Index into the same groups: this window's native tab group, if any.
+    tab_group: Option<usize>,
+    /// Whether the cell is showing this window.
+    front: bool,
+}
+
+/// Groups a strip's windows by the frame they share on screen. A native tab
+/// group is one cell, and a tabbed-display stack is one cell however many
+/// rows (and native tab groups) it holds. A native tab group's front tab is
+/// its first, which focus keeps in front.
+fn strip_cells(strip: &LayoutStrip) -> (HashMap<Entity, CellSlot>, Vec<Vec<Entity>>) {
+    let mut slots = HashMap::new();
+    let mut groups: Vec<Vec<Entity>> = Vec::new();
+    let mut group = |members: Vec<Entity>| {
+        groups.push(members);
+        groups.len() - 1
+    };
+
+    for column in strip.columns() {
+        match column {
+            Column::Single(entity) | Column::Fullscren(entity) => {
+                let cell = group(vec![*entity]);
+                slots.insert(
+                    *entity,
+                    CellSlot {
+                        cell,
+                        tab_group: None,
+                        front: true,
+                    },
+                );
+            }
+            Column::Tabs(tabs) => {
+                let cell = group(tabs.clone());
+                let tab_group = (tabs.len() > 1).then_some(cell);
+                for (index, entity) in tabs.iter().enumerate() {
+                    slots.insert(
+                        *entity,
+                        CellSlot {
+                            cell,
+                            tab_group,
+                            front: index == 0,
+                        },
+                    );
+                }
+            }
+            Column::Stack(items) => {
+                let tabbed_active = items
+                    .iter()
+                    .flat_map(StackItem::window_iter)
+                    .find_map(|entity| strip.active_tab(entity));
+                let shared_cell = tabbed_active
+                    .is_some()
+                    .then(|| group(items.iter().flat_map(StackItem::window_iter).collect()));
+
+                for item in items {
+                    let item_front = tabbed_active.is_none_or(|active| item.contains(active));
+                    match item {
+                        StackItem::Single(entity) => {
+                            let cell = shared_cell.unwrap_or_else(|| group(vec![*entity]));
+                            slots.insert(
+                                *entity,
+                                CellSlot {
+                                    cell,
+                                    tab_group: None,
+                                    front: item_front,
+                                },
+                            );
+                        }
+                        StackItem::Tabs(tabs) => {
+                            let native = group(tabs.clone());
+                            let cell = shared_cell.unwrap_or(native);
+                            let tab_group = (tabs.len() > 1).then_some(native);
+                            for (index, entity) in tabs.iter().enumerate() {
+                                slots.insert(
+                                    *entity,
+                                    CellSlot {
+                                        cell,
+                                        tab_group,
+                                        front: item_front && index == 0,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (slots, groups)
 }
 
 /// Resolves which display a window frame is on and whether more than a sliver of
@@ -721,8 +818,23 @@ impl QueryState for PaneruQueryState {
         };
 
         let has_floating = has_floating_windows(windows);
+        // The row each (display, Space) is showing, for the display list.
+        let mut shown_rows: HashMap<(Entity, WorkspaceId), u32> = HashMap::new();
         for (child, strip, active_workspace, selected_workspace) in workspaces {
             let positions = strip_positions(strip);
+            let (cells, cell_groups) = strip_cells(strip);
+            // A group's id is its smallest window id, which no tab switch or
+            // reorder changes.
+            let group_ids = cell_groups
+                .iter()
+                .map(|members| {
+                    members
+                        .iter()
+                        .filter_map(|entity| windows.get_managed(*entity))
+                        .map(|(window, _, _)| window.id())
+                        .min()
+                })
+                .collect::<Vec<_>>();
             let query_space =
                 active_workspace || selected_workspace && active_workspace_id != Some(strip.id());
             let floating = untracked_floating_in_space(
@@ -758,6 +870,8 @@ impl QueryState for PaneruQueryState {
                     let (column, row) = positions
                         .get(&entity)
                         .map_or((None, None), |&(column, row)| (Some(column), Some(row)));
+                    let slot = cells.get(&entity);
+                    let group_id = |index: usize| group_ids.get(index).copied().flatten();
                     Some(PaneruWindowState {
                         window_id: window.id(),
                         bundle_id,
@@ -778,11 +892,19 @@ impl QueryState for PaneruQueryState {
                         column,
                         row,
                         tabbed: strip.is_tabbed_display(entity),
+                        tab_group: slot.and_then(|slot| slot.tab_group).and_then(group_id),
+                        cell: slot
+                            .and_then(|slot| group_id(slot.cell))
+                            .or(Some(window.id())),
+                        cell_front: slot.is_none_or(|slot| slot.front),
                     })
                 })
                 .collect::<Vec<_>>();
 
             let number = strip.virtual_index + 1;
+            if query_space {
+                shown_rows.insert((child.parent(), strip.id()), number);
+            }
             workspace_max_numbers
                 .entry(strip.id())
                 .and_modify(|max| *max = (*max).max(number))
@@ -838,11 +960,35 @@ impl QueryState for PaneruQueryState {
         virtual_workspaces
             .sort_by_key(|workspace| (workspace.native_workspace_id, workspace.number));
 
+        // A WindowServer lookup per display, not an accessibility round trip.
+        let mut display_states = displays
+            .iter()
+            .map(|(display, entity, active)| {
+                let native_workspace_id = window_manager.active_display_space(display.id()).ok();
+                let bounds = display.frame();
+                DisplayState {
+                    display_id: display.id(),
+                    frame: Frame {
+                        x: bounds.min.x,
+                        y: bounds.min.y,
+                        width: bounds.width(),
+                        height: bounds.height(),
+                    },
+                    active,
+                    native_workspace_id,
+                    virtual_workspace_number: native_workspace_id
+                        .and_then(|space| shown_rows.get(&(entity, space)).copied()),
+                }
+            })
+            .collect::<Vec<_>>();
+        display_states.sort_by_key(|display| (display.frame.x, display.frame.y));
+
         Ok(PaneruQueryState {
             version: 1,
             timestamp: now_timestamp(),
             active,
             virtual_workspaces,
+            displays: display_states,
         })
     }
 }

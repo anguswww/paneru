@@ -643,6 +643,7 @@ mod tests {
                 focused_app_name: Some("Test App".to_string()),
                 ..PaneruActiveState::default()
             },
+            displays: Vec::new(),
             virtual_workspaces: vec![PaneruVirtualWorkspaceState {
                 number: 1,
                 native_workspace_id: 10,
@@ -663,6 +664,9 @@ mod tests {
                     column: Some(0),
                     row: Some(0),
                     tabbed: false,
+                    tab_group: None,
+                    cell: None,
+                    cell_front: true,
                 }],
             }],
         }

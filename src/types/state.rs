@@ -78,6 +78,25 @@ pub struct QueryState {
     pub timestamp: u64,
     pub active: ActiveState,
     pub virtual_workspaces: Vec<VirtualWorkspaceState>,
+    /// Every connected display and the native Space it is showing. Missing
+    /// from a daemon that predates it.
+    #[serde(default)]
+    pub displays: Vec<DisplayState>,
+}
+
+/// One connected display, and what it is showing right now.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DisplayState {
+    pub display_id: u32,
+    /// The whole display, menu bar included, in global display coordinates.
+    pub frame: Frame,
+    /// Whether this is the display with the active menu bar.
+    pub active: bool,
+    /// The native macOS Space currently shown on this display, when known.
+    pub native_workspace_id: Option<u64>,
+    /// One-based number of the virtual workspace row shown on that Space, when
+    /// Paneru manages it.
+    pub virtual_workspace_number: Option<u32>,
 }
 
 /// The active display, workspace and focused window.
@@ -149,6 +168,21 @@ pub struct WindowState {
     /// from a daemon that predates it.
     #[serde(default)]
     pub tabbed: bool,
+    /// Identifies the native (OS) tab group the window belongs to: the
+    /// smallest window id among its tabs, so it stays put while the user
+    /// switches tabs. `None` when the window is not a native tab.
+    #[serde(default)]
+    pub tab_group: Option<i32>,
+    /// Identifies the layout cell — one frame on screen — the window
+    /// occupies, shared by native tabs and by the members of a tabbed stack:
+    /// the smallest window id in the cell. Group by it to list each cell once.
+    /// `None` only from a daemon that predates it.
+    #[serde(default)]
+    pub cell: Option<i32>,
+    /// Whether this is the window its cell is showing: the front native tab,
+    /// the visible tab of a tabbed stack, or the only window in the cell.
+    #[serde(default)]
+    pub cell_front: bool,
 }
 
 impl QueryState {
@@ -317,6 +351,9 @@ mod tests {
                 column: Some(0),
                 row: Some(0),
                 tabbed: false,
+                tab_group: None,
+                cell: None,
+                cell_front: true,
             }],
             active: ActiveState::default(),
         };
@@ -398,12 +435,16 @@ mod tests {
             column: None,
             row: None,
             tabbed: false,
+            tab_group: None,
+            cell: None,
+            cell_front: true,
         };
 
         let state = QueryState {
             version: 1,
             timestamp: 0,
             active: ActiveState::default(),
+            displays: Vec::new(),
             virtual_workspaces: vec![VirtualWorkspaceState {
                 number: 1,
                 native_workspace_id: 1,

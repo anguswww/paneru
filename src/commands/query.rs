@@ -506,6 +506,9 @@ mod tests {
                 column: Some(0),
                 row: Some(0),
                 tabbed: false,
+                tab_group: None,
+                cell: None,
+                cell_front: true,
             })
             .collect();
 
@@ -513,6 +516,7 @@ mod tests {
             version: 1,
             timestamp: 123,
             active,
+            displays: Vec::new(),
             virtual_workspaces: vec![PaneruVirtualWorkspaceState {
                 number: virtual_workspace_number,
                 native_workspace_id: 10,
