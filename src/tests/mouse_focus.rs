@@ -657,3 +657,60 @@ fn clicking_partially_offscreen_focused_window_brings_it_into_view() {
         })
         .run(commands);
 }
+
+#[test]
+fn native_tab_switch_preserves_pointer_but_window_switch_still_warps() {
+    let config: Config = (
+        MainOptions {
+            mouse_follows_focus: Some(true),
+            focus_follows_mouse: Some(false),
+            auto_center: Some(false),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let corner = Origin::new(10, 40);
+    TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .on_iteration(0, |world, state| {
+            let first = find_window_entity(0, world);
+            let second = find_window_entity(1, world);
+            world
+                .query::<&mut crate::ecs::layout::LayoutStrip>()
+                .single_mut(world)
+                .unwrap()
+                .convert_to_tabs(first, second)
+                .unwrap();
+            state.focus_window(0);
+        })
+        .on_iteration(1, move |world, state| {
+            assert_focused!(world, 0);
+            world.resource::<WindowManager>().warp_mouse(corner);
+            state.focus_window(1);
+        })
+        .on_iteration(2, move |world, state| {
+            assert_focused!(world, 1);
+            assert_eq!(
+                state.cursor_position(),
+                corner,
+                "switching native tabs must preserve the pointer"
+            );
+            state.focus_window(2);
+        })
+        .on_iteration(3, move |world, state| {
+            assert_focused!(world, 2);
+            assert_ne!(
+                state.cursor_position(),
+                corner,
+                "switching to a different window must still center the pointer"
+            );
+        })
+        .run(vec![
+            Event::Command {
+                command: Command::PrintState
+            };
+            4
+        ]);
+}

@@ -12,7 +12,7 @@ use bevy::ecs::observer::On;
 use bevy::ecs::query::{Added, Has, With, Without};
 use bevy::ecs::resource::Resource;
 use bevy::ecs::schedule::IntoScheduleConfigs as _;
-use bevy::ecs::system::{Commands, NonSend, Populated, Query, Res, ResMut, Single};
+use bevy::ecs::system::{Commands, Local, NonSend, Populated, Query, Res, ResMut, Single};
 use bevy::math::IRect;
 use bevy::prelude::Event as BevyEvent;
 use bevy::time::Time;
@@ -590,9 +590,19 @@ fn mouse_follows_focus(
     workspaces: MouseFocusStrips,
     restored: Query<&RestoreFocusMarker>,
     clicked: Query<(Entity, &ClickFocusMarker)>,
+    mut previous_focus: Local<Option<Entity>>,
     mut commands: Commands,
 ) {
     let entity = *focused;
+    let previous = previous_focus.replace(entity);
+    let switching_native_tabs = previous.is_some_and(|previous| {
+        previous != entity
+            && workspaces.iter().any(|(strip, _, _, _, _, _)| {
+                strip
+                    .tab_group(previous)
+                    .is_some_and(|group| group.contains(&entity))
+            })
+    });
     let mut click_focused = false;
     for (marker_entity, marker) in &clicked {
         if marker.0 == entity {
@@ -605,8 +615,8 @@ fn mouse_follows_focus(
     let Some(window) = windows.get(entity) else {
         return;
     };
-    if click_focused {
-        debug!("Suppressing center mouse after a click");
+    if click_focused || switching_native_tabs {
+        debug!("Suppressing center mouse after a click or native tab switch");
         return;
     }
     if !config.mouse_follows_focus()
