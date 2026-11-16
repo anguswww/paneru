@@ -12,6 +12,7 @@ use bevy::ecs::schedule::common_conditions::{not, resource_exists};
 use bevy::ecs::system::{Commands, Local, ParamSet, Populated, Query, Res, ResMut, Single};
 use bevy::ecs::world::World;
 use bevy::time::common_conditions::on_timer;
+use bevy::time::{Time, Timer, TimerMode};
 use std::collections::HashSet;
 use std::time::Duration;
 use tracing::{Level, debug, error, instrument, warn};
@@ -21,7 +22,7 @@ use crate::commands::{
     Command, Direction, MouseMove, MoveFocus, Operation, filter_window_operations,
     get_window_in_direction,
 };
-use crate::config::Config;
+use crate::config::{Config, VirtualWorkspaceAnimation};
 use crate::ecs::focus::FocusHistory;
 use crate::ecs::layout::{LayoutStrip, PARKED_STRIP_SLIVER, origin_exposing};
 use crate::ecs::params::{ActiveDisplay, WindowCtx, Windows};
@@ -70,6 +71,7 @@ type RestorableStrips<'w, 's> = Query<
         &'static ChildOf,
         Option<&'static PreviousStripPosition>,
         Option<&'static RepositionMarker>,
+        Option<&'static WorkspaceRowTransition>,
     ),
     Without<Window>,
 >;
@@ -173,7 +175,9 @@ impl Plugin for WorkspaceEventsPlugin {
         );
         app.add_systems(
             Update,
-            show_active_workspace.in_set(super::UpdateSet::Workspace),
+            (finish_workspace_row_transitions, show_active_workspace)
+                .chain()
+                .in_set(super::UpdateSet::Workspace),
         );
         app.add_systems(
             PostUpdate,
@@ -201,6 +205,65 @@ pub(super) struct VirtualMoveMarker {
 pub(crate) struct PreviousStripPosition {
     pub origin: Origin,
     pub focus: Option<Entity>,
+}
+
+/// Keeps every window on a workspace moving with its strip. Outgoing rows
+/// return to the usual parking corner once the slide ends, so hidden windows
+/// keep belonging to their original display. The deadline bounds slow slides.
+#[derive(Component, Debug)]
+pub(crate) struct WorkspaceRowTransition {
+    destination: Origin,
+    parked: Option<Origin>,
+    deadline: Timer,
+}
+
+impl WorkspaceRowTransition {
+    fn new(destination: Origin, parked: Option<Origin>) -> Self {
+        Self {
+            destination,
+            parked,
+            deadline: Timer::new(Duration::from_secs(2), TimerMode::Once),
+        }
+    }
+}
+
+type WorkspaceRowTransitions<'w, 's> = Populated<
+    'w,
+    's,
+    (
+        Entity,
+        &'static mut Position,
+        &'static mut WorkspaceRowTransition,
+        Option<&'static RepositionMarker>,
+        Has<Scrolling>,
+    ),
+>;
+
+fn finish_workspace_row_transitions(
+    transitions: WorkspaceRowTransitions,
+    time: Res<Time>,
+    mut commands: Commands,
+) {
+    for (entity, mut position, mut transition, moving, scrolling) in transitions {
+        transition.deadline.tick(time.delta());
+        let superseded =
+            scrolling || moving.is_some_and(|target| target.0 != transition.destination);
+        if moving.is_some() && !superseded && !transition.deadline.is_finished() {
+            continue;
+        }
+        let destination = if superseded {
+            moving
+                .map_or(position.0, |target| target.0)
+                .with_y(transition.destination.y)
+        } else {
+            transition.destination
+        };
+        position.0 = transition.parked.unwrap_or(destination);
+        commands
+            .entity(entity)
+            .remove::<(WorkspaceRowTransition, RepositionMarker)>();
+        spawn_snap_strip_guard(entity, &mut commands);
+    }
 }
 
 /// Guard spawned alongside the re-focus of a restored strip's remembered
@@ -1469,6 +1532,10 @@ fn column_closest_to_center(
         .map(|(candidate, _)| candidate)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "workspace activation coordinates parking, row transitions, and focus restoration"
+)]
 #[instrument(level = Level::DEBUG, skip_all)]
 pub(crate) fn show_active_workspace(
     activated: Single<Entity, Added<ActiveWorkspaceMarker>>,
@@ -1479,20 +1546,38 @@ pub(crate) fn show_active_workspace(
     config: Res<Config>,
     mut commands: Commands,
 ) {
-    let Some(workspace_id) = workspaces
-        .iter()
-        .find_map(|(entity, _, strip, _, _, _)| (entity == *activated).then_some(strip.id()))
+    let Some((workspace_id, target_index)) =
+        workspaces
+            .iter()
+            .find_map(|(entity, _, strip, _, _, _, _)| {
+                (entity == *activated).then_some((strip.id(), strip.virtual_index))
+            })
     else {
         return;
     };
+
+    let rows = config.virtual_workspace_animations()
+        && config.virtual_workspace_animation() == VirtualWorkspaceAnimation::Rows;
+    let source_index = workspaces.iter().find_map(
+        |(entity, position, strip, child, previous, _, transition)| {
+            let (display, _) = displays.get(child.parent()).ok()?;
+            let visible = previous.is_none()
+                || transition.is_some_and(|transition| transition.parked.is_none())
+                || transition.is_none() && position.0 != display.bounds().max - PARKED_STRIP_SLIVER;
+            (entity != *activated && strip.id() == workspace_id && visible)
+                .then_some(strip.virtual_index)
+        },
+    );
 
     // Hide other strips on the current workspace
     let current_focus = windows.focused();
     let current_workspace = workspaces
         .iter_mut()
-        .filter(|(entity, _, strip, _, _, _)| strip.id() == workspace_id && *entity != *activated);
+        .filter(|(entity, _, strip, _, _, _, _)| {
+            strip.id() == workspace_id && *entity != *activated
+        });
 
-    for (entity, mut position, strip, child, previous, moving) in current_workspace {
+    for (entity, mut position, strip, child, previous, moving, transition) in current_workspace {
         let Ok((active_display, _)) = displays.get(child.parent()) else {
             continue;
         };
@@ -1518,17 +1603,39 @@ pub(crate) fn show_active_workspace(
         if let Ok(mut cmd) = commands.get_entity(entity) {
             cmd.try_remove::<Scrolling>()
                 .try_remove::<RepositionMarker>()
-                .try_remove::<ManualStripOffset>();
+                .try_remove::<ManualStripOffset>()
+                .try_remove::<WorkspaceRowTransition>();
         }
 
-        if config.virtual_workspace_animations() {
+        if rows {
+            let parked = bounds.max - PARKED_STRIP_SLIVER;
+            if source_index == Some(strip.virtual_index) {
+                let direction = if target_index > strip.virtual_index {
+                    -1
+                } else {
+                    1
+                };
+                let destination = position.0 + Origin::new(0, direction * bounds.height());
+                commands
+                    .entity(entity)
+                    .insert(WorkspaceRowTransition::new(destination, Some(parked)));
+                commands.reposition_entity(entity, destination);
+            } else {
+                // Superseded exits must not keep crossing the newly selected row.
+                position.0 = parked;
+                if transition.is_some() {
+                    spawn_snap_strip_guard(entity, &mut commands);
+                }
+            }
+        } else if config.virtual_workspace_animations() {
             commands.reposition_entity(entity, bounds.max - PARKED_STRIP_SLIVER);
         } else {
             position.0 = bounds.max - PARKED_STRIP_SLIVER;
         }
     }
 
-    let Ok((_, mut position, strip, child, previous_position, _)) = workspaces.get_mut(*activated)
+    let Ok((_, mut position, strip, child, previous_position, _, transition)) =
+        workspaces.get_mut(*activated)
     else {
         return;
     };
@@ -1576,7 +1683,23 @@ pub(crate) fn show_active_workspace(
             })
             .unwrap_or(*origin);
 
-        if config.virtual_workspace_animations() {
+        if rows {
+            if transition.is_none() {
+                let direction = if source_index.is_some_and(|source| target_index < source) {
+                    -1
+                } else {
+                    1
+                };
+                let Ok((display, _)) = displays.get(child.parent()) else {
+                    return;
+                };
+                position.0 = origin + Origin::new(0, direction * display.bounds().height());
+            }
+            commands
+                .entity(*activated)
+                .insert(WorkspaceRowTransition::new(origin, None));
+            commands.reposition_entity(*activated, origin);
+        } else if config.virtual_workspace_animations() {
             commands.reposition_entity(*activated, origin);
         } else {
             position.0 = origin;
@@ -1744,5 +1867,84 @@ fn reap_empty_virtual_workspaces(
         {
             entity_commands.try_despawn();
         }
+    }
+}
+
+#[cfg(test)]
+mod row_transition_tests {
+    use super::*;
+
+    #[test]
+    fn row_transitions_expire_and_respect_replaced_targets() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_systems(Update, finish_workspace_row_transitions);
+        let target = Origin::new(-200, 20);
+        let parked = Origin::new(1014, 758);
+        let outgoing = app
+            .world_mut()
+            .spawn((
+                Position(Origin::new(-200, -400)),
+                RepositionMarker(target),
+                WorkspaceRowTransition::new(target, Some(parked)),
+            ))
+            .id();
+        let incoming = app
+            .world_mut()
+            .spawn((
+                Position(Origin::new(-200, 400)),
+                RepositionMarker(target),
+                WorkspaceRowTransition::new(target, None),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs(3));
+        app.update();
+        assert_eq!(
+            app.world().get::<Position>(outgoing).expect("parked row").0,
+            parked
+        );
+        assert_eq!(
+            app.world()
+                .get::<Position>(incoming)
+                .expect("restored row")
+                .0,
+            target
+        );
+        assert!(
+            app.world()
+                .get::<WorkspaceRowTransition>(incoming)
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<WorkspaceRowTransition>(outgoing)
+                .is_none()
+        );
+
+        // A horizontal move supersedes a row slide without restoring stale x.
+        app.world_mut().entity_mut(incoming).insert((
+            Position(Origin::new(-200, 400)),
+            RepositionMarker(Origin::new(-350, 20)),
+            WorkspaceRowTransition::new(target, None),
+        ));
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(20));
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Position>(incoming)
+                .expect("new horizontal position")
+                .0,
+            Origin::new(-350, 20)
+        );
+        assert!(
+            app.world()
+                .get::<WorkspaceRowTransition>(incoming)
+                .is_none()
+        );
+        assert!(app.world().get::<RepositionMarker>(incoming).is_none());
     }
 }

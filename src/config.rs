@@ -1004,6 +1004,12 @@ impl Config {
             .is_some_and(|enabled| enabled)
     }
 
+    pub fn virtual_workspace_animation(&self) -> VirtualWorkspaceAnimation {
+        self.options()
+            .virtual_workspace_animation
+            .unwrap_or_default()
+    }
+
     /// Number of virtual workspaces to pre-create on each physical space at
     /// startup. Default: 1 (just the physical space itself, no extra virtual
     /// workspaces).
@@ -1337,6 +1343,16 @@ pub struct RestoreOptions {
     pub missing_windows: Option<MissingWindowBehavior>,
 }
 
+/// Visual style used when virtual workspace animations are enabled.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(rename_all = "snake_case")]
+pub enum VirtualWorkspaceAnimation {
+    #[default]
+    Corner,
+    Rows,
+}
+
 /// `MainOptions` represents the primary configuration options for the window manager.
 /// These options control various behaviors such as mouse focus, gesture recognition, and window animation.
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -1434,6 +1450,10 @@ pub struct MainOptions {
     /// Off by default, because people use virtual workspaces due to the slow animation of the
     /// native macOS workspaces.
     pub virtual_workspace_animations: Option<bool>,
+
+    /// Animation style: `corner` (default) or `rows` (numbered from top to bottom).
+    /// Requires `virtual_workspace_animations = true`.
+    pub virtual_workspace_animation: Option<VirtualWorkspaceAnimation>,
 
     /// When moving a window to another virtual workspace, insert it at the column
     /// matching its current on-screen position (keeping it where you see it,
@@ -3053,4 +3073,25 @@ fn gesture_page_distance_rejects_nonpositive_and_nonfinite_values() {
             "accepted {value}"
         );
     }
+}
+
+#[test]
+fn test_virtual_workspace_animation_style_config() {
+    let default = Config::try_from("[options]\n[bindings]\n").expect("default config");
+    assert_eq!(
+        default.virtual_workspace_animation(),
+        VirtualWorkspaceAnimation::Corner
+    );
+    let rows = Config::try_from(
+        "[options]\nvirtual_workspace_animations = true\nvirtual_workspace_animation = 'rows'\n[bindings]\n",
+    ).expect("row config");
+    assert!(rows.virtual_workspace_animations());
+    assert_eq!(
+        rows.virtual_workspace_animation(),
+        VirtualWorkspaceAnimation::Rows
+    );
+    assert!(
+        Config::try_from("[options]\nvirtual_workspace_animation = 'unknown'\n[bindings]\n",)
+            .is_err()
+    );
 }

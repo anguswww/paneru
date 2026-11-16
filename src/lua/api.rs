@@ -675,6 +675,7 @@ fn config_to_lua_table(lua: &Lua, config: &Config) -> mlua::Result<Table> {
         remember_display_setups: _,
         disable_native_tabs: _,
         virtual_workspace_animations: _,
+        virtual_workspace_animation: _,
         insert_windows_mid_strip: _,
         create_virtual_workspace_automatically: _,
     } = &raw_opts;
@@ -709,6 +710,13 @@ fn config_to_lua_table(lua: &Lua, config: &Config) -> mlua::Result<Table> {
     options.set(
         "virtual_workspace_animations",
         config.virtual_workspace_animations(),
+    )?;
+    options.set(
+        "virtual_workspace_animation",
+        match config.virtual_workspace_animation() {
+            crate::config::VirtualWorkspaceAnimation::Corner => "corner",
+            crate::config::VirtualWorkspaceAnimation::Rows => "rows",
+        },
     )?;
     options.set(
         "insert_windows_mid_strip",

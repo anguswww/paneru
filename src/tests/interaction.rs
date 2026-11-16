@@ -5126,3 +5126,198 @@ fn test_clock_samples_the_current_event_pump_interval() {
         assert_eq!(world.resource::<Time>().delta(), interval);
     }
 }
+
+/// Rows retain horizontal scroll, enter from the numbered direction, and can
+/// reverse in flight without saving an intermediate vertical position.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "exercises both directions and reversal through the same workspace lifecycle"
+)]
+fn test_virtual_workspace_rows_direction_and_interruption() {
+    use crate::config::VirtualWorkspaceAnimation;
+    use crate::ecs::workspace::{PreviousStripPosition, WorkspaceRowTransition};
+
+    let config: Config = (
+        MainOptions {
+            virtual_workspace_animations: Some(true),
+            virtual_workspace_animation: Some(VirtualWorkspaceAnimation::Rows),
+            animation_speed: Some(12.0),
+            auto_center: Some(false),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut h = TestHarness::new().with_config(config).with_windows(3);
+    h.run(vec![
+        Event::Command {
+            command: Command::PrintState,
+        },
+        Event::Command {
+            command: Command::Window(Operation::VirtualMoveNumber(1, MoveFocus::Stay)),
+        },
+    ]);
+    h.advance(Duration::from_secs(1));
+    let row_height = {
+        let world = h.world();
+        world
+            .query::<&crate::manager::Display>()
+            .single(world)
+            .expect("display")
+            .bounds()
+            .height()
+    };
+    let (source, destination, source_origin, destination_origin) = {
+        let world = h.world();
+        let mut strips = world.query::<(
+            Entity,
+            &LayoutStrip,
+            &Position,
+            Option<&PreviousStripPosition>,
+        )>();
+        let (source, _, position, _) = strips
+            .iter(world)
+            .find(|(_, strip, _, _)| strip.virtual_index == 0)
+            .expect("source");
+        let source_origin = position.0;
+        let (destination, _, _, previous) = strips
+            .iter(world)
+            .find(|(_, strip, _, _)| strip.virtual_index == 1)
+            .expect("destination");
+        (
+            source,
+            destination,
+            source_origin,
+            previous.expect("saved destination").origin,
+        )
+    };
+    h.world().write_message(Event::Command {
+        command: Command::Window(Operation::VirtualNumber(1)),
+    });
+    h.advance(Duration::from_millis(20));
+    {
+        let world = h.world();
+        let outgoing = world
+            .get::<RepositionMarker>(source)
+            .expect("outgoing row")
+            .0;
+        let incoming = world.get::<Position>(destination).expect("incoming row").0;
+        assert_eq!(outgoing.x, source_origin.x);
+        assert_eq!(outgoing.y, source_origin.y - row_height);
+        assert_eq!(incoming.x, destination_origin.x);
+        assert!(
+            incoming.y > destination_origin.y,
+            "higher-numbered row enters from below"
+        );
+        assert!(world.get::<WorkspaceRowTransition>(destination).is_some());
+    }
+    h.advance(Duration::from_millis(100));
+    {
+        let world = h.world();
+        let outgoing_y = world.get::<Position>(source).expect("outgoing offset").0.y;
+        let incoming_y = world
+            .get::<Position>(destination)
+            .expect("incoming offset")
+            .0
+            .y;
+        assert!(
+            (incoming_y - outgoing_y - row_height).abs() <= 1,
+            "rows move together"
+        );
+        let members = world
+            .get::<LayoutStrip>(source)
+            .expect("source layout")
+            .all_windows();
+        let mut member_y = None;
+        for entity in members {
+            let position = world.get::<Position>(entity).expect("moving member").0;
+            let layout = world
+                .get::<crate::ecs::LayoutPosition>(entity)
+                .expect("member slot")
+                .0;
+            assert_eq!(position.x, source_origin.x + layout.x, "no diagonal travel");
+            assert!(
+                position.y < source_origin.y,
+                "members follow their exiting row"
+            );
+            assert_eq!(
+                *member_y.get_or_insert(position.y),
+                position.y,
+                "members move in lockstep"
+            );
+            assert!(
+                world.get::<RepositionMarker>(entity).is_none(),
+                "members use the row animation"
+            );
+        }
+    }
+    let before_reverse = h
+        .world()
+        .get::<Position>(source)
+        .expect("source position")
+        .0;
+    h.world().write_message(Event::Command {
+        command: Command::Window(Operation::VirtualNumber(0)),
+    });
+    h.advance(Duration::from_millis(20));
+    {
+        let world = h.world();
+        let incoming = world.get::<Position>(source).expect("reversed row").0;
+        assert!(incoming.y >= before_reverse.y && incoming.y <= source_origin.y);
+        assert_eq!(
+            world
+                .get::<RepositionMarker>(source)
+                .expect("restore target")
+                .0,
+            source_origin
+        );
+    }
+    h.advance(Duration::from_secs(3));
+    {
+        let world = h.world();
+        assert_eq!(
+            world.get::<Position>(source).expect("restored source").0,
+            source_origin
+        );
+        assert!(
+            world
+                .query::<&WorkspaceRowTransition>()
+                .iter(world)
+                .next()
+                .is_none()
+        );
+        assert!(world.get::<PreviousStripPosition>(source).is_none());
+        assert_eq!(
+            world
+                .get::<PreviousStripPosition>(destination)
+                .expect("saved destination")
+                .origin,
+            destination_origin
+        );
+    }
+
+    // After settling, switching upward starts the incoming row above the display.
+    h.run(vec![Event::Command {
+        command: Command::Window(Operation::VirtualNumber(1)),
+    }]);
+    h.advance(Duration::from_secs(2));
+    h.world().write_message(Event::Command {
+        command: Command::Window(Operation::VirtualNumber(0)),
+    });
+    h.advance(Duration::from_millis(20));
+    assert!(h.world().get::<Position>(source).expect("upper row").0.y < source_origin.y);
+    assert_eq!(
+        h.world()
+            .get::<RepositionMarker>(destination)
+            .expect("exit downward")
+            .0
+            .y,
+        destination_origin.y + row_height
+    );
+    h.advance(Duration::from_secs(3));
+    assert_eq!(
+        h.world().get::<Position>(source).expect("restored row").0,
+        source_origin
+    );
+}

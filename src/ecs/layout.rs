@@ -14,7 +14,7 @@ use tracing::{Level, instrument, trace};
 
 use crate::config::Config;
 use crate::ecs::params::Windows;
-use crate::ecs::workspace::{PreviousStripPosition, SnapStripMarker};
+use crate::ecs::workspace::{PreviousStripPosition, SnapStripMarker, WorkspaceRowTransition};
 use crate::ecs::{
     Bounds, DockPosition, EnsureVisibleMarker, Initializing, LayoutPosition, ManualStripOffset,
     ParkedTabMarker, Position, RepositionMarker, ReshuffleAroundMarker, ResizeAnchor, ResizeMarker,
@@ -71,6 +71,7 @@ type StripsForWindowPositioning<'w, 's> = Query<
         Option<&'static RepositionMarker>,
         Has<Scrolling>,
         &'static ChildOf,
+        Has<WorkspaceRowTransition>,
     ),
     With<LayoutStrip>,
 >;
@@ -1881,6 +1882,69 @@ fn insert_strip_window_contexts(
     }
 }
 
+/// Keeps a window touching its own display, so macOS does not adopt it onto
+/// a neighbouring one.
+///
+/// The parked strip origin only accounts for the first window: everything
+/// sitting below it in a stack picks up that offset on top of the corner and
+/// lands past the bottom edge, fully inside the display underneath. macOS then
+/// adopts the window onto that display, and showing the workspace again brings
+/// it back there instead of here. Park those at the corner as well.
+///
+/// An `exiting_row` (a workspace row sliding out upwards) is likewise held at
+/// the top edge, preserving horizontal scroll and stack geometry until each
+/// window reaches it.
+fn anchor_to_display(frame: &mut IRect, viewport: IRect, exiting_row: bool) {
+    let park_row = viewport.max.y - PARKED_STRIP_SLIVER;
+    if frame.min.y > park_row {
+        let height = frame.height();
+        frame.min.y = park_row;
+        frame.max.y = park_row + height;
+    }
+    if exiting_row && frame.max.y < viewport.min.y + PARKED_STRIP_SLIVER {
+        let height = frame.height();
+        frame.max.y = viewport.min.y + PARKED_STRIP_SLIVER;
+        frame.min.y = frame.max.y - height;
+    }
+}
+
+/// Where each strip's windows belong this frame, and which windows are in a
+/// workspace row that is sliding (those follow the strip's live position).
+fn strip_window_contexts(
+    workspaces: &StripsForWindowPositioning,
+    snap_guards: &Query<&SnapStripMarker>,
+) -> (EntityHashMap<StripWindowContext>, EntityHashSet) {
+    let mut strip_contexts = EntityHashMap::default();
+    let mut row_windows = EntityHashSet::default();
+    for (
+        strip_entity,
+        layout_strip,
+        Position(strip_position),
+        reposition,
+        swiping,
+        child_of,
+        row,
+    ) in workspaces
+    {
+        let snap_settling = row || snap_guards.iter().any(|guard| guard.strip == strip_entity);
+        let strip_target = if row {
+            row_windows.extend(layout_strip.all_windows());
+            *strip_position
+        } else {
+            reposition.map_or(*strip_position, |target| target.0)
+        };
+        insert_strip_window_contexts(
+            &mut strip_contexts,
+            layout_strip,
+            strip_target,
+            swiping,
+            child_of.parent(),
+            snap_settling,
+        );
+    }
+    (strip_contexts, row_windows)
+}
+
 /// Reacts to changes of logical window layout in the strip and any have been changed, reposition
 /// the layout strip against the current display viewport.
 #[instrument(level = Level::DEBUG, skip_all)]
@@ -1894,21 +1958,7 @@ fn position_layout_windows(
 ) {
     let offscreen_sliver_width = config.sliver_width();
     let (_, pad_right, _, pad_left) = config.edge_padding();
-    let mut strip_contexts = EntityHashMap::default();
-    for (strip_entity, layout_strip, Position(strip_position), reposition, swiping, child_of) in
-        &workspaces
-    {
-        let snap_settling = snap_guards.iter().any(|guard| guard.strip == strip_entity);
-        let strip_target = reposition.map_or(*strip_position, |target| target.0);
-        insert_strip_window_contexts(
-            &mut strip_contexts,
-            layout_strip,
-            strip_target,
-            swiping,
-            child_of.parent(),
-            snap_settling,
-        );
-    }
+    let (strip_contexts, row_windows) = strip_window_contexts(&workspaces, &snap_guards);
 
     for (entity, window, layout_position, mut position, mut bounds, resize, was_parked_tab) in
         positioned_windows
@@ -1962,18 +2012,8 @@ fn position_layout_windows(
             frame.max.y += inset;
         }
 
-        // Keep the window anchored to its own display. The parked strip origin
-        // only accounts for the first window: everything sitting below it in a
-        // stack picks up that offset on top of the corner and lands past the
-        // bottom edge, fully inside the display underneath. macOS then adopts
-        // the window onto that display, and showing the workspace again brings
-        // it back there instead of here. Park those at the corner as well.
         let park_row = viewport.max.y - PARKED_STRIP_SLIVER;
-        if frame.min.y > park_row {
-            let height = frame.height();
-            frame.min.y = park_row;
-            frame.max.y = park_row + height;
-        }
+        anchor_to_display(&mut frame, viewport, row_windows.contains(&entity));
 
         if resize.is_none() {
             if bounds.0 != frame.size() {
