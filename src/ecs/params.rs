@@ -212,16 +212,19 @@ pub struct FrameActivity<'w, 's> {
     resizing: Query<'w, 's, (), With<ResizeMarker>>,
     scrolling: Query<'w, 's, (), With<Scrolling>>,
     flash_messages: Query<'w, 's, (), With<FlashMessage>>,
+    slides: Query<'w, 's, (), With<super::slide::WorkspaceSlide>>,
 }
 
 impl FrameActivity<'_, '_> {
     /// Returns `true` while any window is being moved, resized or scrolled, or
-    /// a flash message is on screen — i.e. while frames still need drawing.
+    /// a flash message or workspace slide is on screen — i.e. while frames still
+    /// need drawing.
     pub fn mid_frame(&self) -> bool {
         !self.repositioning.is_empty()
             || !self.resizing.is_empty()
             || !self.scrolling.is_empty()
             || !self.flash_messages.is_empty()
+            || !self.slides.is_empty()
     }
 }
 

@@ -50,6 +50,7 @@ pub(crate) mod restore;
 pub mod script_state;
 pub mod scroll;
 pub(crate) mod setups;
+pub(crate) mod slide;
 pub mod state;
 pub(crate) mod systems;
 mod triggers;
@@ -971,6 +972,7 @@ pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<
         .add_plugins(mouse::MouseEventsPlugin)
         .add_plugins(scroll::ScrollEventsPlugin)
         .add_plugins(workspace::WorkspaceEventsPlugin)
+        .add_plugins(slide::WorkspaceSlidePlugin)
         .add_plugins(layout::LayoutEventsPlugin)
         .add_plugins(focus::FocusEventsPlugin)
         .add_plugins(display::DisplayEventsPlugin)
@@ -1010,6 +1012,7 @@ pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<
     let tab_indicator_manager = TabIndicatorManager::new(mtm, tab_indicator_events);
     app.insert_non_send(platform_callbacks)
         .insert_non_send(overlay_manager)
+        .insert_non_send(crate::slide::WorkspaceSlideOverlay::new(mtm))
         .insert_non_send(flash_message_manager)
         .insert_non_send(tab_indicator_manager)
         .insert_non_send(receiver);

@@ -25,6 +25,7 @@ mod overlay;
 mod pasteboard;
 mod platform;
 mod reader;
+mod slide;
 mod tab_indicator;
 mod util;
 
