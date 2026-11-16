@@ -42,7 +42,7 @@ iterated on quickly. Bug fixes still go upstream.
 - `paneru subscribe --state` pushes `snapshot` events.
 - `window virtualnum <n> display <id>`.
 - `paneru --no-launch …` for client commands.
-- `virtual_workspace_animation = "rows"`: workspaces slide vertically.
+- `virtual_workspace_animation = "rows"`: a snapshot of the old workspace slides off the display vertically (needs Screen Recording).
 - The pointer stays put when switching native tabs (upstreamable fix).
 
 ## Dogfooding
