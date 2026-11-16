@@ -42,3 +42,22 @@ iterated on quickly. Bug fixes still go upstream.
 - `paneru subscribe --state` pushes `snapshot` events.
 - `window virtualnum <n> display <id>`.
 - `paneru --no-launch …` for client commands.
+
+## Dogfooding
+
+The running Paneru is this checkout's `fork-main`, not Homebrew's:
+
+```sh
+scripts/dogfood.sh            # cargo build --release, sign, install, restart
+scripts/dogfood.sh --no-build # reinstall the last build
+```
+
+It installs to `~/.local/bin/paneru` (first on `PATH`) and points the
+`com.github.karinushka.paneru` launch agent there. The binary is signed with
+the self-signed "Paneru Local Signing" identity from the login keychain, so
+the Accessibility grant survives rebuilds; on a new machine create it with
+`scripts/dogfood.sh --create-identity` and grant Accessibility once.
+
+To go back to Homebrew, set the launch agent's `Program` to
+`/opt/homebrew/bin/paneru` (or `brew services`/`paneru service reinstall`
+from the Homebrew binary) and restart it.
