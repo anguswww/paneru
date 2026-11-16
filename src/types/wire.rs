@@ -30,6 +30,50 @@ pub fn service_name() -> String {
     std::env::var(SERVICE_ENV).unwrap_or_else(|_| SERVICE_NAME.to_string())
 }
 
+/// The name a running daemon holds for as long as it lives, beside
+/// [`service_name`].
+///
+/// The service name alone cannot say whether a daemon is running: once
+/// launchd holds it for a `MachServices` job, it answers a lookup whether or
+/// not the job is up, and the first message sent starts the job. This name is
+/// registered by the daemon process itself, so it resolves only while that
+/// process is alive, and looking it up launches nothing.
+#[must_use]
+pub fn presence_name() -> String {
+    presence_name_for(&service_name())
+}
+
+fn presence_name_for(service: &str) -> String {
+    format!("{service}.running")
+}
+
+/// Whether a daemon is running, found without starting one.
+///
+/// A daemon that predates [`presence_name`] never registers it, so it is
+/// reported as not running.
+#[must_use]
+pub fn is_running() -> bool {
+    is_running_at(&service_name())
+}
+
+fn is_running_at(service: &str) -> bool {
+    async_mach_ports::bootstrap::look_up(&presence_name_for(service)).is_ok()
+}
+
+/// Claims [`presence_name`] for this process. Hold the returned right for as
+/// long as the daemon serves; dropping it withdraws the name.
+///
+/// # Errors
+///
+/// When the name is already held, by another live daemon.
+pub fn claim_presence() -> Result<async_mach_ports::rights::RecvRight> {
+    claim_presence_at(&service_name())
+}
+
+fn claim_presence_at(service: &str) -> Result<async_mach_ports::rights::RecvRight> {
+    async_mach_ports::bootstrap::register(&presence_name_for(service))
+}
+
 /// The wire format: `MessagePack`, with struct fields written as names.
 ///
 /// `rmp_serde::to_vec` would write a struct as a bare positional array, which
@@ -286,6 +330,33 @@ mod tests {
         // Ops are deliberately not carried: a set off the wire is one nothing
         // has been asked of yet.
         assert_eq!(decoded.ops(), []);
+    }
+
+    #[test]
+    fn presence_resolves_only_while_a_daemon_holds_it() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let service = format!(
+            "com.github.karinushka.paneru.test-{}-{nanos}",
+            std::process::id()
+        );
+
+        assert!(!is_running_at(&service), "nothing claimed it yet");
+        let presence = claim_presence_at(&service).expect("claims a fresh name");
+        assert!(is_running_at(&service));
+        assert!(
+            claim_presence_at(&service).is_err(),
+            "a second daemon cannot claim it"
+        );
+
+        drop(presence);
+        // launchd learns of the dead port asynchronously.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while is_running_at(&service) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!is_running_at(&service), "gone once its holder lets go");
     }
 
     #[test]

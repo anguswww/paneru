@@ -19,9 +19,13 @@ use crate::errors::{Error, Result};
 /// Returns a plain "paneru is not running" error when no daemon is running.
 fn connect() -> Result<Sender<Request>> {
     wire::connect(&service_name()).map_err(|err| match err {
-        WireError::NotRunning => Error::Generic("paneru is not running".to_string()),
+        WireError::NotRunning => not_running(),
         other => Error::from(other),
     })
+}
+
+fn not_running() -> Error {
+    Error::Generic("paneru is not running".to_string())
 }
 
 /// Sends a command without waiting for a reply.
@@ -125,10 +129,17 @@ pub async fn subscribe(options: SubscribeOptions) -> Result<()> {
 ///
 /// The single place the CLI blocks; everything above is `async`.
 ///
+/// With `no_launch`, a daemon that is not already running is reported as such
+/// rather than started: reaching the service name of a loaded but stopped
+/// launchd job would otherwise launch it.
+///
 /// # Errors
 ///
 /// Whatever the subcommand reports.
-pub fn run(command: ClientCommand) -> Result<()> {
+pub fn run(command: ClientCommand, no_launch: bool) -> Result<()> {
+    if no_launch && !wire::is_running() {
+        return Err(not_running());
+    }
     futures_lite::future::block_on(async move {
         match command {
             ClientCommand::Send(argv) => send_command(argv).await,

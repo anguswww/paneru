@@ -76,6 +76,11 @@ pub struct Paneru {
     /// The subcommand to execute (e.g., `launch`, `install`, `send-cmd`).
     #[clap(subcommand)]
     subcmd: Option<SubCmd>,
+
+    /// For commands that talk to the daemon: fail with "paneru is not
+    /// running" instead of starting an installed service that is stopped.
+    #[arg(long, global = true)]
+    no_launch: bool,
 }
 
 /// `SubCmd` enumerates the available command-line subcommands for `paneru`.
@@ -211,7 +216,10 @@ fn main() -> Result<()> {
 
     let service = || service::Service::try_new(service::ID);
 
-    let subcmd = Paneru::parse().subcmd.unwrap_or_default();
+    let args = Paneru::parse();
+    let no_launch = args.no_launch;
+    let client = |command| client::run(command, no_launch);
+    let subcmd = args.subcmd.unwrap_or_default();
     maybe_warn_deprecated_options_for_service(&subcmd);
 
     match subcmd {
@@ -250,15 +258,15 @@ fn main() -> Result<()> {
         SubCmd::Start => service()?.start()?,
         SubCmd::Stop => service()?.stop()?,
         SubCmd::Restart => service()?.restart()?,
-        SubCmd::ShowMenu => client::run(ClientCommand::Send(vec!["showmenu".to_string()]))?,
-        SubCmd::SendCmd { cmd } => client::run(ClientCommand::Send(cmd))?,
-        SubCmd::Query { query } => client::run(ClientCommand::Query(query.kind()))?,
+        SubCmd::ShowMenu => client(ClientCommand::Send(vec!["showmenu".to_string()]))?,
+        SubCmd::SendCmd { cmd } => client(ClientCommand::Send(cmd))?,
+        SubCmd::Query { query } => client(ClientCommand::Query(query.kind()))?,
         SubCmd::Subscribe { json: _, state } => {
-            client::run(ClientCommand::Subscribe(types::wire::SubscribeOptions {
+            client(ClientCommand::Subscribe(types::wire::SubscribeOptions {
                 state,
             }))?;
         }
-        SubCmd::State { state } => client::run(ClientCommand::ScriptState(state.request()?))?,
+        SubCmd::State { state } => client(ClientCommand::ScriptState(state.request()?))?,
     }
     Ok(())
 }

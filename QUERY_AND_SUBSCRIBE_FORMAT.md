@@ -14,6 +14,14 @@ A client written in Rust can skip the JSON entirely by using the
 `paneru::types` module (`src/types`): its `wire::Request` and `wire::Response`
 are the protocol, and `async-mach-ports` is the transport.
 
+When Paneru is installed as a service, its Mach service name belongs to launchd,
+and reaching it starts the service if it is stopped. Pass `--no-launch` (before
+the subcommand, e.g. `paneru --no-launch query state --json`) to have a client
+command fail with `paneru is not running` instead. It checks a second name,
+`com.github.karinushka.paneru.running`, that the daemon registers itself and
+that therefore only resolves while it is alive; a daemon too old to register it
+is reported as not running.
+
 All query responses are a single JSON document. `subscribe` emits
 line-delimited JSON, with one complete event object per line.
 

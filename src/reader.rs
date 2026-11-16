@@ -46,8 +46,15 @@ impl CommandReader {
                 "can not register a Mach port - maybe another Paneru instance is already running?"
             );
         })?;
+        // Lets `--no-launch` clients tell a live daemon from a launchd job
+        // that is merely loaded. Without it they only ever see "not running".
+        let presence = wire::claim_presence()
+            .inspect_err(|err| warn!("can not register the presence name: {err}"))
+            .ok();
 
         thread::spawn(move || {
+            // Held, never read, for as long as this process serves.
+            let _presence = presence;
             // Parks this one thread for the process lifetime; each request is
             // handed to the IO pool rather than served inline.
             futures_lite::future::block_on(async move {
