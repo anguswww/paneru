@@ -1010,6 +1010,19 @@ impl Config {
             .unwrap_or_default()
     }
 
+    /// Whether a workspace switch moves the real strips (the "corner" style).
+    /// The "rows" style switches them instantly under a snapshot slide.
+    pub fn animate_workspace_strips(&self) -> bool {
+        self.virtual_workspace_animations()
+            && self.virtual_workspace_animation() == VirtualWorkspaceAnimation::Corner
+    }
+
+    /// Whether a workspace switch plays the snapshot slide (the "rows" style).
+    pub fn workspace_slide(&self) -> bool {
+        self.virtual_workspace_animations()
+            && self.virtual_workspace_animation() == VirtualWorkspaceAnimation::Rows
+    }
+
     /// Number of virtual workspaces to pre-create on each physical space at
     /// startup. Default: 1 (just the physical space itself, no extra virtual
     /// workspaces).

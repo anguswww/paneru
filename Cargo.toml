@@ -115,6 +115,7 @@ objc2-quartz-core = { version = "0.3", features = [
   "objc2-core-graphics",
 ] }
 objc2-foundation = { version = "0.3", features = [
+  "NSValue",
   "NSNotification",
   "NSProcessInfo",
   "NSAttributedString",

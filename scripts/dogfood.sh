@@ -78,7 +78,7 @@ cp "$REPO/target/release/paneru" "$staged"
 # No hardened runtime: LuaJIT needs to map executable memory.
 codesign --force --sign "$hash" --identifier "$BUNDLE_ID" "$staged"
 mv -f "$staged" "$INSTALL_PATH"
-echo "installed $("$INSTALL_PATH" --version) ($(git -C "$REPO" rev-parse --short HEAD)) to $INSTALL_PATH"
+echo "installed $("$INSTALL_PATH" --version) ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)) to $INSTALL_PATH"
 
 if [[ ! -f "$PLIST" ]]; then
     "$INSTALL_PATH" service install
